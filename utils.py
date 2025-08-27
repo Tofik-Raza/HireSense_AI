@@ -51,7 +51,7 @@ Do not include any extra text, explanation, or formatting outside of the JSON.
         return [line.strip("- ") for line in txt.splitlines() if line][:count]
 
 # Load model once (you can choose "tiny", "base", "small", "medium", "large-v2")
-whisper_model = WhisperModel("medium", device="cpu", compute_type="int8")
+whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
 
 async def stt_transcribe(recording_url: str):
     async with httpx.AsyncClient() as client:
