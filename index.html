@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AI Interview Screener — Dashboard</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; padding: 24px; max-width: 900px; margin: auto; color:#111;}
+    h1 { margin-bottom: 6px; }
+    label { display:block; margin-top:12px; font-weight:600; }
+    input, textarea, select, button { font-size:14px; padding:8px; margin-top:6px; width:100%; box-sizing:border-box; }
+    .row { display:flex; gap:12px; }
+    .col { flex:1; }
+    .status { margin-top:12px; padding:10px; border-radius:6px; background:#f4f4f7; }
+    pre { background:#111; color:#e6e6e6; padding:12px; border-radius:6px; white-space:pre-wrap; }
+    .small { font-size:13px; color:#555; }
+    .result { margin-top:12px; border-left:3px solid #3b82f6; padding:12px; background:#f8fbff; border-radius:6px; }
+  </style>
+</head>
+<body>
+  <h1>AI Interview Screener</h1>
+  <p class="small">Upload a job description and a candidate resume. The backend will parse resume, create candidate, place the call, transcribe & score answers, then SMS results.</p>
+
+  <form id="startForm">
+    <label>Job Description (text file or paste below)</label>
+    <input type="file" id="jd_file" accept=".txt,.md,.pdf,.docx" />
+    <textarea id="jd_text" rows="4" placeholder="Or paste JD text here"></textarea>
+
+    <label>Resume (PDF or DOCX)</label>
+    <input type="file" id="resume_file" accept=".pdf,.docx,.doc" required />
+
+    <label>Polling interval (seconds)</label>
+    <input type="number" id="poll_interval" value="5" min="2" />
+
+    <button type="submit">Create & Start Interview</button>
+  </form>
+
+  <div id="status" class="status" style="display:none;"></div>
+
+  <div id="created" style="display:none;">
+    <h3>Interview created</h3>
+    <p><strong>Interview ID:</strong> <span id="interviewId"></span></p>
+    <p><strong>Candidate:</strong> <span id="candidateInfo"></span></p>
+    <div id="progress" class="small">Creating interview and waiting for call/processing...</div>
+    <div id="finalResult" class="result" style="display:none;"></div>
+  </div>
+
+  <hr style="margin:24px 0" />
+
+  <h3>See result</h3>
+  <p class="small">Paste an interview id and fetch its results immediately.</p>
+  <div class="row">
+    <div class="col">
+      <input id="lookup_id" placeholder="Enter interview id" />
+    </div>
+    <div style="width:140px">
+      <button id="btn_lookup">See result</button>
+    </div>
+  </div>
+  <div id="lookup_result" style="margin-top:12px;"></div>
+
+  <script>
+    const startForm = document.getElementById('startForm');
+    const statusEl = document.getElementById('status');
+    const createdEl = document.getElementById('created');
+    const interviewIdEl = document.getElementById('interviewId');
+    const candidateInfoEl = document.getElementById('candidateInfo');
+    const finalResultEl = document.getElementById('finalResult');
+    const progressEl = document.getElementById('progress');
+    const pollIntervalInput = document.getElementById('poll_interval');
+
+    const lookupBtn = document.getElementById('btn_lookup');
+    const lookupInput = document.getElementById('lookup_id');
+    const lookupResult = document.getElementById('lookup_result');
+
+    const API_BASE = window.location.origin; // defaults to same origin; change if backend hosted elsewhere
+
+    function showStatus(text) {
+      statusEl.style.display = 'block';
+      statusEl.textContent = text;
+    }
+
+    function hideStatus() {
+      statusEl.style.display = 'none';
+      statusEl.textContent = '';
+    }
+
+    startForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      hideStatus();
+      finalResultEl.style.display = 'none';
+      createdEl.style.display = 'none';
+      showStatus('Uploading files and creating interview...');
+
+      const jdFile = document.getElementById('jd_file').files[0];
+      const resumeFile = document.getElementById('resume_file').files[0];
+      const jdText = document.getElementById('jd_text').value.trim();
+
+      if (!resumeFile) {
+        showStatus('Resume is required.');
+        return;
+      }
+
+      const fd = new FormData();
+      if (jdFile) {
+        fd.append('jd_file', jdFile);
+      } else if (jdText) {
+        // create a blob from JD text
+        const blob = new Blob([jdText], {type: 'text/plain'});
+        fd.append('jd_file', blob, 'jd.txt');
+      } else {
+        // still allow; backend expects jd_file but code accepts either; adjust if needed
+        const blob = new Blob([''], {type: 'text/plain'});
+        fd.append('jd_file', blob, 'jd.txt');
+      }
+      fd.append('resume_file', resumeFile);
+
+      try {
+        showStatus('Requesting interview...');
+
+        const resp = await fetch(`${API_BASE}/interview/start`, {
+          method: 'POST',
+          body: fd
+        });
+
+        if (!resp.ok) {
+          const body = await resp.text();
+          showStatus('Error creating interview: ' + resp.status + ' — ' + body);
+          return;
+        }
+        const data = await resp.json();
+        hideStatus();
+
+        const interviewId = data.interview_id;
+        interviewIdEl.textContent = interviewId;
+        candidateInfoEl.textContent = data.candidate.name + ' — ' + data.candidate.phone;
+        createdEl.style.display = 'block';
+        progressEl.textContent = 'Interview created. Waiting for results...';
+
+        // start polling
+        pollResults(interviewId);
+
+      } catch (err) {
+        showStatus('Network error: ' + err.message);
+        console.error(err);
+      }
+    });
+
+    let pollingTimer = null;
+    async function pollResults(interviewId) {
+      const intervalSeconds = Math.max(2, parseInt(pollIntervalInput.value || '5', 10));
+      // poll immediately, then every interval
+      await doPoll(interviewId);
+      pollingTimer = setInterval(() => doPoll(interviewId), intervalSeconds * 1000);
+    }
+
+    async function doPoll(interviewId) {
+      try {
+        const resp = await fetch(`${API_BASE}/interviews/${encodeURIComponent(interviewId)}/results`);
+        if (resp.status === 401 || resp.status === 403) {
+          progressEl.textContent = 'Permission error when fetching results.';
+          return;
+        }
+        if (!resp.ok) {
+          // show "no result" if 404 or 400
+          if (resp.status === 404 || resp.status === 400) {
+            progressEl.textContent = 'No result yet. Interview still processing.';
+            return;
+          }
+          progressEl.textContent = 'Waiting for results...';
+          return;
+        }
+        const json = await resp.json();
+        // if overall_score is null/0/undefined: still maybe processing; we treat recommendation present as ready
+        const overall = json.overall_score;
+        if (overall === null || overall === undefined) {
+          progressEl.textContent = 'Results not ready yet...';
+          return;
+        }
+
+        // Stop polling
+        if (pollingTimer) {
+          clearInterval(pollingTimer);
+          pollingTimer = null;
+        }
+
+        renderFinal(json);
+      } catch (err) {
+        console.error('poll error', err);
+      }
+    }
+
+    function renderFinal(json) {
+      progressEl.textContent = 'Results ready.';
+      finalResultEl.style.display = 'block';
+      const lines = [];
+      lines.push(`<strong>Final Result Score:</strong> ${Number(json.overall_score).toFixed(2)}`);
+      lines.push('<br/>');
+      json.questions.forEach((q) => {
+        const a = (json.answers || []).find(x => x.index === q.index);
+        lines.push(`<div style="margin-top:8px;"><strong>Q${q.index}:</strong> ${escapeHtml(q.text)}<br/>`);
+        lines.push(`<strong>A${q.index}:</strong> ${a ? escapeHtml(a.transcript || 'No transcript') : 'No transcript'}<br/>`);
+        lines.push(`<strong>Score:</strong> ${a && a.score!=null ? a.score : 'N/A'}</div>`);
+      });
+      finalResultEl.innerHTML = lines.join('\n');
+    }
+
+    // Lookup handler
+    lookupBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      lookupResult.innerHTML = 'Fetching...';
+      const id = lookupInput.value.trim();
+      if (!id) {
+        lookupResult.innerHTML = 'Please enter an interview id.';
+        return;
+      }
+      try {
+        const resp = await fetch(`${API_BASE}/interviews/${encodeURIComponent(id)}/results`);
+        if (!resp.ok) {
+          if (resp.status === 404 || resp.status === 400) {
+            lookupResult.innerHTML = 'No result';
+            return;
+          }
+          lookupResult.innerHTML = 'Error: ' + resp.status;
+          return;
+        }
+        const json = await resp.json();
+        const out = [];
+        out.push(`<strong>Candidate:</strong> ${escapeHtml(json.candidate.name)} — ${escapeHtml(json.candidate.phone)}<br/>`);
+        out.push(`<strong>Overall:</strong> ${json.overall_score?.toFixed?.(2) ?? 'N/A'}<br/>`);
+        json.questions.forEach((q) => {
+          const a = (json.answers || []).find(x => x.index === q.index);
+          out.push(`<div style="margin-top:6px;"><strong>Q${q.index}:</strong> ${escapeHtml(q.text)}<br/>`);
+          out.push(`<strong>A${q.index}:</strong> ${a ? escapeHtml(a.transcript || 'No transcript') : 'No transcript'}<br/>`);
+          out.push(`<strong>Score:</strong> ${a && a.score!=null ? a.score : 'N/A'}</div>`);
+        });
+        lookupResult.innerHTML = out.join('\n');
+      } catch (err) {
+        lookupResult.innerHTML = 'Network error';
+      }
+    });
+
+    // tiny escape to avoid HTML injection in fragments
+    function escapeHtml(s) {
+      if (!s && s !== 0) return '';
+      return String(s).replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    }
+  </script>
+</body>
+</html>
