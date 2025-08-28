@@ -1,36 +1,21 @@
-import os, io, uuid, asyncio, re
+import os, io, asyncio
 from datetime import datetime
-from xmlrpc import client
-from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, Request
-from fastapi.responses import Response, PlainTextResponse
-from twilio.twiml.voice_response import VoiceResponse, Say
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Request, Query
+from fastapi.responses import Response, FileResponse
+from twilio.twiml.voice_response import VoiceResponse
 from twilio.rest import Client
 from sqlmodel import SQLModel, Session, select
-from twilio.rest import Client
-from dotenv import load_dotenv
-from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional
 import pdfplumber
-import httpx
 from docx import Document
-from flask import json, session
+import json
 
 from models import Candidate, Interview, Question, Answer
 from deps import get_session, require_whitelisted, to_e164, engine
 from utils import llm_generate_questions, llm_resp, stt_transcribe, score_answer
 
-load_dotenv
 SQLModel.metadata.create_all(engine, checkfirst=True)
 
 app = FastAPI(title="AI Interview Screener")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 async def llm_extract_resume_data(text: str):
     prompt = f"""
@@ -85,7 +70,9 @@ def build_results(interview_id: str, session: Session):
         "answers": list(answers_by_idx.values()),
     }
 
-
+@app.get("/")
+async def root():
+    return FileResponse("index.html")
 @app.post("/interview/start")
 async def start_interview(
     jd_file: UploadFile = File(...),
@@ -145,8 +132,6 @@ async def start_interview(
         "twilio_sid": call.sid
     }
 
-from fastapi import Query
-
 @app.post("/webhooks/voice/answer")
 async def voice_answer(
     interview_id: str = Query(...),
@@ -167,7 +152,6 @@ async def voice_answer(
         return Response(content=str(response), media_type="application/xml")
 
     response.say('Welcome to the AI interview. Please answer each question after the beep.')
-    response.pause(length=1)
     response.say(f"Question {i}. {q.text}")
     response.record(
         maxLength="90",
@@ -181,8 +165,7 @@ async def voice_answer(
 @app.post("/webhooks/voice/next")
 async def voice_next(
     interview_id: str = Query(...), i: int = Query(...), session: Session = Depends(get_session)
-):
-    
+):    
     nxt = i + 1
     q = session.exec(select(Question).where(Question.interview_id == interview_id, Question.idx == nxt)).first()
     response = VoiceResponse()
@@ -222,9 +205,6 @@ async def recording_complete(
 
     if not q:
         return {"error": "Question not found"}
-
-    question_id = q.id
-    question_text = q.text
 
     a = session.exec(
         select(Answer).where(Answer.interview_id == interview_id, Answer.idx == i)
@@ -303,7 +283,7 @@ def get_results(interview_id: str, session: Session = Depends(get_session)):
     data = build_results(interview_id, session)
     if not data["answers"]:
         raise HTTPException(status_code=404, detail="No result")
-    # optionally, if all answers are pending, treat as not ready
+
     if all(a.pending for a in data["answers"]):
         raise HTTPException(status_code=404, detail="No result")
     return {

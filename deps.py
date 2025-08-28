@@ -1,12 +1,8 @@
-from dotenv import load_dotenv
 import os
 import phonenumbers
-from fastapi import Header, HTTPException, Depends
+from fastapi import Header, HTTPException
 from sqlmodel import Session, create_engine, SQLModel
 
-load_dotenv()
-
-API_KEY = os.getenv("API_KEY", "secret123")
 OUTBOUND_WHITELIST = set([n.strip() for n in os.getenv("OUTBOUND_WHITELIST", "").split(",") if n.strip()])
 
 engine = create_engine(os.getenv("DATABASE_URL", "sqlite:///./screener.db"))
@@ -15,11 +11,6 @@ def get_session():
     with Session(engine) as session:
         yield session
 
-def require_api_key(x_api_key: str = Header(None)):
-    print(x_api_key)
-    print(API_KEY)
-    if x_api_key != API_KEY:
-        raise HTTPException(401, "Invalid API Key")
 
 def require_whitelisted(phone: str):
     print(OUTBOUND_WHITELIST)
