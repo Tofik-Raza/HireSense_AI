@@ -2,6 +2,7 @@ import os, io, asyncio
 from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Request, Query
 from fastapi.responses import Response, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from twilio.twiml.voice_response import VoiceResponse
 from twilio.rest import Client
 from sqlmodel import SQLModel, Session, select
@@ -16,6 +17,13 @@ from utils import llm_generate_questions, llm_resp, stt_transcribe, score_answer
 SQLModel.metadata.create_all(engine, checkfirst=True)
 
 app = FastAPI(title="AI Interview Screener")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://hiresense-ai-74yk.onrender.com"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 async def llm_extract_resume_data(text: str):
     prompt = f"""
